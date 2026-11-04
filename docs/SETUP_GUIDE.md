@@ -1,288 +1,215 @@
-# 📖 Hướng Dẫn Cài Đặt & Triển Khai (Setup Guide)
-## Dự Án: Embedded AI Object Detection Trên Jetson Nano 4GB (Yocto Linux & C++17)
+# 📖 Hướng Dẫn Cài Đặt, Build & Kiểm Thử Hệ Thống TCU (Setup & Verification Guide)
+## Dự Án: Automotive Telematics Control Unit (Yocto Linux — Qualcomm SA515M + Companion MCU)
 
-Tài liệu này hướng dẫn chi tiết từng bước cách thiết lập phần cứng, cài đặt môi trường, biên dịch và triển khai hệ thống theo 3 kịch bản:
-1. **Kịch bản 1**: Chạy thử nghiệm và Unit Test trên **Host PC (Windows / Linux x86)** với **Mock HAL** (không cần board Jetson).
-2. **Kịch bản 2**: Biên dịch và chạy trực tiếp trên **Jetson Nano (JetPack 4.6.x / Ubuntu)** để test trước khi build Yocto.
-3. **Kịch bản 3**: Build hệ điều hành nhúng hoàn chỉnh bằng **Yocto Project (Dunfell)** và nạp vào thẻ nhớ.
-
----
-
-## 🔌 PHẦN 1: Thiết Lập Phần Cứng Jetson Nano 4GB (Hardware Setup)
-
-Trước khi cấp nguồn, hãy đảm bảo các kết nối phần cứng chính xác:
-
-```
-                  +-----------------------------------+
-                  |        Jetson Nano 4GB B01        |
-                  |                                   |
-[Nguồn 5V/4A] --->| J25 (Barrel Jack)                 |
-[Jumper J48]  --->| Short pin (Disable Micro-USB)     |
-[CSI Camera]  --->| J13 (CAM0 Connector - IMX219)     |
-[Quạt 5V PWM] --->| J15 (4-pin PWM Fan Header)        |
-[Mạng LAN]    --->| RJ45 Gigabit Ethernet             |
-                  +-----------------------------------+
-```
-
-### 1. Cấu hình Nguồn 5V/4A Barrel Jack
-* **Bắt buộc**: Dùng nguồn ngoài qua cổng Barrel Jack **5V/4A DC (J25)**.
-* **Cắm Jumper J48**: Tìm header 2 chân J48 (nằm ngay dưới cổng Camera CAM0). **Nối tắt (short) 2 chân này bằng jumper 2.54mm** để ngắt nguồn cổng Micro-USB và kích hoạt cổng Barrel Jack.
-* *Lưu ý*: Nếu dùng nguồn Micro-USB 5V/2A, khi GPU chạy TensorRT FP16 sẽ lập tức sụt áp gây sập nguồn (Brownout Reset).
-
-### 2. Kết nối Camera MIPI CSI-2 (Sony IMX219)
-* Mở khóa chốt nhựa trên cổng **J13 (CAM0)** bằng cách kéo nhẹ lên.
-* Cắm cáp ribbon của camera vào: **mặt có dải tiếp xúc màu bạc quay về phía tản nhiệt (SoC)**, mặt màu xanh quay ra ngoài cổng kết nối.
-* Đẩy chốt nhựa xuống để cố định cáp.
-
-### 3. Kết nối Quạt tản nhiệt PWM (J15)
-* Cắm quạt 4-pin 5V vào header J15. Quạt sẽ được điều khiển tự động bởi `HealthService` qua PWM kernel.
+Tài liệu này hướng dẫn chi tiết từng bước thiết lập môi trường, biên dịch, xây dựng bản phân phối Yocto Linux và kiểm thử đầu-cuối cho cả 4 tính năng (**eCall**, **Full OTA**, **Stolen Vehicle Tracking**, **Test Service**) theo 3 kịch bản triển khai:
+1. **Kịch bản 1 (Nhanh nhất cho Dev & CI)**: Biên dịch CMake và chạy toàn bộ 6 Linux Daemons + **Virtual MCU Simulator (`tcu-mcu-sim`)** + **Mock HAL** ngay trên **Host PC (Ubuntu x86_64)** không cần phần cứng nhúng.
+2. **Kịch bản 2 (Kiểm thử tích hợp OS & A/B OTA)**: Build hệ điều hành nhúng hoàn chỉnh bằng **Yocto Project (`scarthgap` / `kirkstone`)** với `meta-tcu-telematics` + `meta-rauc` và khởi chạy trên máy ảo **`qemuarm64`**.
+3. **Kịch bản 3 (Triển khai Production)**: Đấu nối phần cứng và tích hợp BSP lên bo mạch thực tế **Qualcomm SA515M + NXP S32K144 / STM32G4 MCU**.
 
 ---
 
-## 💻 PHẦN 2: Kịch Bản 1 — Chạy Thử Nghiệm Trên Host PC Với Mock HAL
+## 🔌 PHẦN 1: Sơ Đồ Kết Nối Phần Cứng Tham Chiếu (SA515M + Companion MCU)
 
-Kiến trúc 3 tầng cho phép bạn chạy toàn bộ logic nghiệp vụ (Pipeline, Tracker, Rule Engine, MQTT, Storage) trên máy tính xách tay cá nhân (Windows hoặc Ubuntu x86) mà không cần board Jetson.
+Đối với bo mạch TCU thực tế (hoặc bộ kit phát triển gắn rời SoC + MCU), các đường tín hiệu vật lý cần đảm bảo đúng thiết kế hai miền tính toán:
 
-### 1. Cài đặt công cụ cần thiết trên Host PC
-* **Ubuntu / Debian**:
-  ```bash
-  sudo apt-get update
-  sudo apt-get install -y build-essential cmake libopencv-dev
-  ```
-* **Windows**:
-  * Cài đặt **Visual Studio 2019/2022** (với C++ Desktop Development) hoặc MinGW-w64.
-  * Cài đặt **CMake** (phiên bản $\ge$ 3.16).
-  * Cài đặt **OpenCV** (thêm `OpenCV_DIR` vào Environment Variables).
-
-### 2. Biên dịch mã nguồn & Chạy Unit Tests
-Mở terminal trong thư mục project:
-```bash
-# 1. Tạo thư mục build
-mkdir build
-cd build
-
-# 2. Cấu hình CMake kích hoạt Unit Test
-cmake .. -DBUILD_TESTS=ON
-
-# 3. Biên dịch chương trình
-cmake --build . --config Release
-
-# 4. Chạy kiểm thử tự động (Unit Tests)
-ctest --output-on-failure
-```
-
-### 3. Chạy ứng dụng ở chế độ Mock
-```bash
-# Chạy với cờ --mock (HAL giả lập frame camera và tensor output của GPU)
-./edge-ai-manager --config ../config/app_config.yaml --mock
-```
-*Kết quả trên màn hình:*
 ```text
-[INFO ] Starting Edge AI Object Detection System initialization...
-[INFO ] Instantiating MOCK Hardware Abstraction Layer (Host PC Test Mode)...
-[INFO ] Loading YOLOv8 Model & TensorRT Engine...
-[INFO ] Opening Camera Stream...
-[INFO ] Camera streaming started.
-[INFO ] Initialization complete. System is ready.
-[INFO ] Entering primary detection loop...
+                       +---------------------------------------------------+
+                       |           TELEMATICS CONTROL UNIT (TCU)           |
+                       |                                                   |
+[Ăng-ten 4G/5G] <----->| RF Main/Div    Qualcomm SA515M SoC                |
+[Ăng-ten GNSS]  ------>| RF GNSS (3.3V LNA Bias + Open/Short Sense)        |
+[Mic / Loa Cabin]<---->| PCM / I2S Audio Codec (AEC + Loopback Test)       |
+                       |                    ▲         ▲                    |
+                       |      SPI0 (10MHz)  │         │ UART_HS + IRQ GPIO |
+                       |                    ▼         ▼                    |
+[Nguồn 12V KL30] ----->| Power / BUB    Companion MCU (S32K144 / STM32G4)  |
+[Pin dự phòng BUB]<--->| Charger/ADC    (Power Master, IMU, Dual-Bank DFU) |
+[Khóa điện KL15] ----->| Wake Input                   ▲                    |
+[Nút SOS / LED]  <---->| GPIO / Diagnostics           │ CAN-FD / CAN 2.0B  |
+[Xung Airbag SRS]----->| PWM Crash IRQ                ▼                    |
+                       +------------------------------|--------------------+
+                                                      │
+                                      [Vehicle Gateway / BCM / OBD-II]
 ```
 
 ---
 
-## ⚡ PHẦN 3: Kịch Bản 2 — Test Trực Tiếp Trên Jetson Nano (JetPack 4.6.x)
+## 💻 PHẦN 2: Kịch Bản 1 — Build & Kiểm Thử Trên Host PC Với Mock HAL & Virtual MCU
 
-Trước khi nạp Yocto, nếu bạn đang có sẵn thẻ nhớ chạy JetPack 4.6.x (Ubuntu 18.04), bạn có thể build native để test phần cứng camera thật và GPU thật:
+Kiến trúc 3 tầng (`Daemons` $\to$ `Service` $\to$ `Pure Virtual HAL`) cho phép chạy chính xác 100% mã nguồn nghiệp vụ trên máy tính Linux cá nhân.
 
-### 1. Chuẩn bị thư viện phụ trợ trên Jetson Nano
+### 1. Cài đặt gói công cụ trên Ubuntu 22.04 / 24.04 LTS
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-    build-essential cmake pkg-config git \
-    libsqlite3-dev libyaml-cpp-dev \
-    libpaho-mqtt-dev libpaho-mqttpp-dev \
-    v4l-utils
+    build-essential cmake ninja-build pkg-config git \
+    libssl-dev libsqlite3-dev libyaml-cpp-dev \
+    nlohmann-json3-dev libspdlog-dev \
+    libpaho-mqtt-dev libpaho-mqttpp-dev libcurl4-openssl-dev \
+    can-utils iproute2
 ```
 
-### 2. Cài đặt Python & Export model YOLOv8 sang ONNX
-Chạy trên Host PC hoặc Nano:
+### 2. Biên dịch mã nguồn & Chạy bộ kiểm thử tự động (Unit + Integration Tests)
 ```bash
-pip3 install ultralytics onnx
-
-# Tải và export YOLOv8 Nano sang ONNX opset 12 (tương thích TensorRT 8.2)
-python3 -c "from ultralytics import YOLO; model = YOLO('yolov8n.pt'); model.export(format='onnx', opset=12)"
-
-# Copy file yolov8n.onnx vào thư mục models/
-cp yolov8n.onnx /opt/jetson-ai-detect/models/
-```
-
-### 3. Cấu hình quạt tản nhiệt & Mode 10W
-```bash
-# Đặt chế độ 10W tối đa hiệu năng
-sudo nvpmodel -m 0
-sudo jetson_clocks
-
-# Bật quạt tản nhiệt chạy ở 80% tốc độ
-sudo sh -c 'echo 200 > /sys/devices/pwm-fan/target_pwm'
-```
-
-### 4. Biên dịch Native trên Jetson Nano
-```bash
-cd Object-Detection-With-Yolov8-In-Jetson-Nano
-mkdir build && cd build
+mkdir -p build && cd build
 
 cmake .. \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DENABLE_JETSON_CUDA=ON \
-    -DENABLE_PAHO_MQTT=ON \
-    -DENABLE_SQLITE3=ON \
-    -DENABLE_YAML_CPP=ON
+    -G Ninja \
+    -DCMAKE_BUILD_TYPE=Debug \
+    -DUSE_MOCK_HAL=ON \
+    -DBUILD_TESTS=ON
 
-cmake --build . -j4
+cmake --build .
+ctest --output-on-failure
 ```
 
-### 5. Chạy thử nghiệm với Camera CSI & TensorRT thật
+### 3. Khởi chạy cụm giả lập TCU trên Host PC và Test 4 Tính Năng bằng `tcu-ctl`
+Khi hoàn tất triển khai mã nguồn, cụm giả lập khởi chạy qua script hoặc từng tiến trình:
 ```bash
-sudo ./edge-ai-manager --config ../config/app_config.yaml
+# Terminal 1: Khởi chạy Virtual Companion MCU + 6 Linux Daemons ở chế độ Mock
+./tcu-mcu-sim --socket /tmp/tcu/mcu_spi.sock &
+./tcu-mcu-ipcd --config ../config/tcu_config.yaml --mock &
+./tcu-platformd --config ../config/tcu_config.yaml --mock &
+./tcu-ecalld --config ../config/tcu_config.yaml --mock &
+./tcu-svtd --config ../config/tcu_config.yaml --mock &
+./tcu-otad --config ../config/tcu_config.yaml --mock &
+./tcu-diagd --config ../config/tcu_config.yaml --mock &
 ```
-*Lần đầu tiên chạy, hệ thống sẽ tự động build file `yolov8n_fp16.engine` từ ONNX (mất ~5-10 phút). Các lần chạy tiếp theo sẽ nạp engine có sẵn chỉ trong 3 giây.*
+
+Sử dụng công cụ **`tcu-ctl`** trên Terminal 2 để kiểm chứng từng tính năng:
+```bash
+# 1. [Test Service] Chạy tự kiểm tra BIST toàn hệ thống & đọc DID pin dự phòng qua UDS 0x22
+./tcu-ctl diag run-bist
+./tcu-ctl uds read-did 0xFD03
+
+# 2. [eCall] Giả lập nổ túi khí ở ΔV = 48 km/h -> Kiểm tra gói 140-byte MSD & cuộc gọi 112
+./tcu-ctl inject crash --airbag front --delta-v 48
+
+# 3. [Stolen Vehicle Tracking] Đỗ xe khóa cửa -> Giả lập kẻ gian cắt bình 12V KL30
+./tcu-ctl vehicle set --speed 0 --ign off --doors locked
+./tcu-ctl inject tamper --kl30-cut
+./tcu-ctl svt engage-immobilizer --signed-token demo.sig
+
+# 4. [Full OTA] Kích hoạt gói cập nhật A/B Linux + MCU Firmware
+./tcu-ctl ota trigger --manifest /tmp/demo_ota_2.4.0/manifest.json
+```
 
 ---
 
-## 📦 PHẦN 4: Kịch Bản 3 — Build Hệ Điều Hành Yocto Hoàn Chỉnh
+## 📦 PHẦN 3: Kịch Bản 2 — Build Hệ Điều Hành Yocto Hoàn Chỉnh Cho `qemuarm64`
 
-Đây là mục tiêu chính của dự án: tạo một bản phân phối Linux nhúng chuyên dụng, không có desktop UI nặng nề, khởi động trong 20 giây và tự động chạy `edge-ai-manager`.
+Kịch bản này kiểm chứng toàn bộ Yocto recipe, `systemd` service hardening, phân quyền người dùng không phải `root`, và cơ chế cập nhật phân vùng kép **RAUC A/B RootFS**.
 
-### 1. Cấu hình máy Host Build (Ubuntu 20.04 LTS x86_64)
-Cài đặt các gói BitBake yêu cầu:
+### 1. Cài đặt gói phụ thuộc cho BitBake (Ubuntu 22.04 LTS)
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
     gawk wget git diffstat unzip texinfo gcc build-essential \
     chrpath socat cpio python3 python3-pip python3-pexpect \
     xz-utils debianutils iputils-ping python3-git python3-jinja2 \
-    libegl1-mesa libsdl1.2-dev pylint3 xterm zstd liblz4-tool
+    python3-subunit zstd liblz4-tool file locales qemu-system-arm
+sudo locale-gen en_US.UTF-8
 ```
 
-### 2. Tải mã nguồn Poky & Các Layer (Nhánh Dunfell 3.1 LTS)
-Tạo workspace và clone mã nguồn:
+### 2. Tải mã nguồn Yocto Scarthgap (5.0 LTS) & Các Layer Phụ Thuộc
 ```bash
-mkdir -p ~/yocto-jetson && cd ~/yocto-jetson
+mkdir -p ~/yocto-tcu && cd ~/yocto-tcu
 
-# 1. Poky Dunfell
-git clone -b dunfell git://git.yoctoproject.org/poky
+# 1. Poky (Core Yocto 5.0 LTS)
+git clone -b scarthgap git://git.yoctoproject.org/poky
 
-# 2. meta-tegra cho L4T R32.7.x (JetPack 4.6.x)
-git clone -b dunfell-l4t-r32.7.x https://github.com/OE4T/meta-tegra.git
+# 2. Meta-OpenEmbedded (SQLite, YAML, Paho MQTT, spdlog, can-utils)
+git clone -b scarthgap https://github.com/openembedded/meta-openembedded.git
 
-# 3. meta-openembedded
-git clone -b dunfell https://github.com/openembedded/meta-openembedded.git
+# 3. Meta-RAUC (Quản lý cập nhật phân vùng kép A/B Atomic Update)
+git clone -b scarthgap https://github.com/rauc/meta-rauc.git
 ```
 
-### 3. Tích hợp Layer của dự án: `meta-jetson-ai-detect`
-Copy layer tùy chỉnh trong dự án vào thư mục Yocto:
+### 3. Khởi tạo môi trường Build và Đăng ký Layer `meta-tcu-telematics`
 ```bash
-cp -r /path/to/Object-Detection-With-Yolov8-In-Jetson-Nano/yocto/meta-jetson-ai-detect ~/yocto-jetson/
+cd ~/yocto-tcu
+source poky/oe-init-build-env build-qemuarm64
 ```
 
-### 4. Khởi tạo môi trường BitBake
-```bash
-cd ~/yocto-jetson
-source poky/oe-init-build-env build-jetson
-```
-
-### 5. Cấu hình `conf/bblayers.conf`
-Mở file `conf/bblayers.conf` và thêm các layer sau:
+Thêm các layer vào `conf/bblayers.conf`:
 ```bitbake
 BBLAYERS ?= " \
   ${TOPDIR}/../poky/meta \
   ${TOPDIR}/../poky/meta-poky \
   ${TOPDIR}/../poky/meta-yocto-bsp \
-  ${TOPDIR}/../meta-tegra \
   ${TOPDIR}/../meta-openembedded/meta-oe \
   ${TOPDIR}/../meta-openembedded/meta-networking \
-  ${TOPDIR}/../meta-openembedded/meta-multimedia \
   ${TOPDIR}/../meta-openembedded/meta-python \
-  ${TOPDIR}/../meta-jetson-ai-detect \
+  ${TOPDIR}/../meta-rauc \
+  /media/tinhtran/01D85BC599D1D460/FreeLancer/Telematic/yocto/meta-tcu-telematics \
 "
 ```
 
-### 6. Cấu hình `conf/local.conf`
-Chỉnh sửa file `conf/local.conf`:
+### 4. Cấu hình `conf/local.conf`
 ```bitbake
-# Đặt target machine là Jetson Nano (B01 devkit)
-MACHINE = "jetson-nano"
+MACHINE = "qemuarm64"
 
-# Chấp nhận giấy phép proprietary của NVIDIA
-LICENSE_FLAGS_WHITELIST += "commercial proprietary"
-
-# Tối ưu tải CPU khi build
-BB_NUMBER_THREADS = "8"
-PARALLEL_MAKE = "-j 8"
-
-# Bật systemd làm init manager chính
+# Sử dụng systemd làm trình quản lý tiến trình & watchdog chính
 INIT_MANAGER = "systemd"
 
-# Bật sstate cache để tăng tốc các lần build tiếp theo
-SSTATE_DIR ?= "${TOPDIR}/sstate-cache"
-DL_DIR ?= "${TOPDIR}/downloads"
+# Bật tính năng RAUC A/B Dual-Bank và định dạng ổ đĩa GPT .wic
+DISTRO_FEATURES:append = " rauc systemd usrmerge"
+
+# Tối ưu tốc độ biên dịch
+BB_NUMBER_THREADS ?= "8"
+PARALLEL_MAKE ?= "-j 8"
+DL_DIR ?= "${TOPDIR}/../downloads"
+SSTATE_DIR ?= "${TOPDIR}/../sstate-cache"
 ```
 
-### 7. Tiến hành Build Image
+### 5. Build Image Hệ Điều Hành & Gói Cập Nhật OTA Bundle
 ```bash
-# Build production image (Lần đầu tiên mất khoảng 6 - 12 giờ tùy CPU và mạng)
-bitbake jetson-ai-image
+# 1. Build image hệ điều hành TCU hoàn chỉnh
+bitbake tcu-telematics-image
+
+# 2. Build gói cập nhật .raucb có chữ ký X.509 để test tính năng OTA
+bitbake tcu-ota-bundle
 ```
 
-### 8. Nạp Image vào thẻ nhớ MicroSD
-Sau khi BitBake hoàn thành, file image nằm ở:
-`tmp/deploy/images/jetson-nano/jetson-ai-image-jetson-nano.tegraflash.zip` hoặc `.sdcard`.
-
-Dùng công cụ `doflash.sh` của meta-tegra hoặc ghi trực tiếp bằng `dd` / `balenaEtcher`:
+### 6. Khởi chạy Máy Ảo QEMU ARM64
 ```bash
-# Nếu sinh ra file .sdcard (thay /dev/sdX bằng thẻ nhớ của bạn)
-sudo dd if=tmp/deploy/images/jetson-nano/jetson-ai-image-jetson-nano.sdcard of=/dev/sdX bs=4M status=progress conv=fsync
+runqemu qemuarm64 tcu-telematics-image nographic slirp
 ```
 
 ---
 
-## 🔍 PHẦN 5: Vận Hành & Khắc Phục Lỗi (Troubleshooting)
+## 🚗 PHẦN 4: Kịch Bản 3 — Porting Sang Phần Cứng Production Qualcomm SA515M
 
-Sau khi cắm thẻ nhớ và bật nguồn Jetson Nano:
+Khi chuyển từ môi trường `qemuarm64` sang SDK chính thức của nhà sản xuất module SA515M (ví dụ Quectel AG55xQ / Telit FN980m / NAD OEM dựa trên `meta-qti-bsp`):
+1. Thay `MACHINE = "sa515m-nad"` trong `conf/local.conf` và thêm layer `meta-qti-bsp` của nhà cung cấp SoC.
+2. Trong `meta-tcu-telematics/recipes-tcu/tcu-suite/tcu-suite_1.0.bb`, đặt cờ CMake `-DUSE_MOCK_HAL=OFF -DENABLE_SA515M_HAL=ON` để liên kết trực tiếp với `libqmi` / `ModemManager`, `/dev/spidev0.0`, ALSA PCM voice interface và phân vùng MTD/UBI hoặc eMMC của SA515M.
+3. Nạp chứng chỉ gốc (Production Root CA) của hệ thống quản lý khóa OEM vào phân vùng chỉ đọc `/factory/ota-ca.cert.pem` và cấu hình khóa khách hàng mTLS trong HSM/TrustZone.
 
-### 1. Kiểm tra trạng thái Daemon
-Hệ thống sẽ tự khởi động service ngầm qua systemd:
+---
+
+## 🔍 PHẦN 5: Vận Hành & Gỡ Lỗi Trên Thiết Bị (Operations & Troubleshooting)
+
+### 1. Kiểm tra trạng thái các Daemon TCU qua `systemd`
 ```bash
-# Kiểm tra trạng thái tiến trình
-systemctl status jetson-ai-detect.service
-
-# Xem log thời gian thực qua journald
-journalctl -u jetson-ai-detect.service -f
+systemctl status tcu-mcu-ipcd tcu-platformd tcu-ecalld tcu-svtd tcu-otad tcu-diagd
+journalctl -u "tcu-*" -f
 ```
 
-### 2. Kiểm tra Camera CSI
-Nếu camera không hiển thị hình ảnh, test pipeline GStreamer trực tiếp bằng lệnh:
+### 2. Kiểm tra phân vùng A/B OTA hiện hành qua RAUC
 ```bash
-gst-launch-1.0 nvarguscamerasrc sensor-id=0 ! 'video/x-raw(memory:NVMM),width=1280,height=720,framerate=30/1' ! nvvidconv ! fakesink
-```
-*Nếu báo lỗi `nvbuf_utils: dmabuf_fd -1`: Hãy khởi động lại daemon nvargus-daemon:*
-```bash
-sudo systemctl restart nvargus-daemon
+rauc status
 ```
 
-### 3. Kiểm tra MQTT Broker kết nối Cloud
-* Cài đặt Mosquitto client để bắt bản tin gửi lên broker:
+### 3. Truy vấn hàng đợi lưu vết ngoại tuyến & Mã lỗi DTC trong SQLite
 ```bash
-mosquitto_sub -h 127.0.0.1 -t "edge/jetson-nano-001/detections" -v
+sqlite3 /data/db/tcu_persistence.db "SELECT dtc_code, status_mask, occurrence_count FROM dtc_records;"
+sqlite3 /data/db/tcu_persistence.db "SELECT priority, COUNT(*) FROM telemetry_queue GROUP BY priority;"
 ```
 
-### 4. Kiểm tra Database SQLite tại chỗ
+### 4. Thiết lập bus CAN ảo (`vcan0`) để bắt khung UDS / CAN
 ```bash
-sqlite3 /var/lib/jetson-ai-detect/detections.db "SELECT * FROM detections ORDER BY id DESC LIMIT 5;"
+sudo modprobe vcan
+sudo ip link add dev vcan0 type vcan
+sudo ip link set up vcan0
+candump vcan0
 ```
-
-### 5. Kiểm tra Watchdog phần cứng
-```bash
-# Kiểm tra thiết bị watchdog có tồn tại không
-ls -l /dev/watchdog
-```
-*HealthService sẽ đều đặn ghi ký tự vào `/dev/watchdog` mỗi 30 giây. Nếu bạn `kill -9` tiến trình `edge-ai-manager` và systemd không restart được, sau 60 giây board Jetson sẽ tự động reboot.*

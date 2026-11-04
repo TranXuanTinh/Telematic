@@ -1,245 +1,116 @@
-# Đặc Tả Luồng Vận Hành Hệ Thống Chi Tiết (System Workflow Specification)
-## Tương Tác CPU, GPU, RAM và Threads Trên Jetson Nano 4GB (JetPack 4.6.x)
+# Đặc Tả Luồng Vận Hành Hệ Thống Chi Tiết (System Operational Workflows)
+## Phân Tích Từng Bước Tương Tác Giữa SA515M, Companion MCU, RAM, Flash & Mạng Viễn Thông
 
-Tài liệu này phân tích chi tiết **luồng vận hành từng mili-giây (per-frame workflow)** của hệ thống, chỉ rõ tại mỗi bước: **Thread nào thực thi**, **CPU làm gì**, **GPU làm gì**, **RAM biến động như thế nào** và **thời gian tiêu tốn bao lâu**.
+Tài liệu này mô tả chi tiết **5 luồng vận hành nghiệp vụ cốt lõi** của hệ thống TCU trên nền tảng Yocto Linux, chỉ rõ tại từng bước: **Miền xử lý nào (MCU hay SA515M)**, **Daemon / Thread nào thực thi**, **Tác động lên Nguồn / RAM / Flash** và **Cam kết độ trễ (Timing SLA)**.
 
 ---
 
-## 1. Sơ Đồ Tổng Thể Luồng Dữ Liệu & Phân Bổ Phần Cứng
+## 1. Luồng 1: Khởi Động (Ignition ON), Vận Hành & Chuyển Ngủ Tiết Kiệm Điện (Power Lifecycle)
+
+```mermaid
+sequenceDiagram
+    participant VEH as Khóa Điện Xe (KL15 / CAN)
+    participant MCU as Companion MCU (Power Master)
+    participant BOOT as Bootloader & Yocto systemd
+    participant IPCD as tcu-mcu-ipcd
+    participant DIAG as tcu-diagd
+    participant PLAT as tcu-platformd
+
+    VEH->>MCU: KL15 Ignition ON (T = 0 ms)
+    MCU->>MCU: Thoát chế độ SLEEP (< 5 ms), bật nguồn PMIC cấp cho SA515M
+    MCU->>BOOT: Khởi động SA515M (ABL/U-Boot -> Signed Kernel -> Read-Only RootFS)
+    BOOT->>IPCD: systemd khởi chạy tcu-mcu-ipcd & tcu-ecalld đầu tiên (T = 4.2 s)
+    IPCD->>MCU: Bắt tay SPI: Đọc MSG_WAKEUP_REASON = WAKE_KL15_IGN_ON
+    BOOT->>PLAT: Khởi chạy tcu-platformd, tcu-svtd, tcu-diagd, tcu-otad (T = 5.5 s)
+    DIAG->>PLAT: Chạy Startup BIST (Modem, GNSS Antenna, Audio Loopback, BUB)
+    DIAG->>IPCD: BIST = PASS -> Bật đèn LED eCall màu Xanh (T = 6.8 s < 8.0 s SLA)
+    Note over VEH,PLAT: Xe di chuyển bình thường — Telemetry định kỳ & Sạc bù pin BUB
+    VEH->>MCU: KL15 Ignition OFF + Cửa khóa
+    MCU->>IPCD: Hết Post-Run -> Gửi PREPARE_SLEEP
+    IPCD->>PLAT: Chốt tọa độ Geofence SVT + Flush SQLite WAL + Ngắt MQTT sạch
+    IPCD->>MCU: Báo LINUX_SLEEP_READY -> SA515M vào Suspend/OFF, MCU canh gác < 0.8 mA
+```
+
+---
+
+## 2. Luồng 2: Cuộc Gọi Khẩn Cấp Tự Động Khi Tai Nạn — eCall (`tcu-ecalld`)
+
+Đây là luồng có mức độ ưu tiên an toàn sinh mạng cao nhất (**P0 — Safety Critical**), kể cả khi va chạm làm đứt cáp ắc-quy 12V của xe:
+
+| Mốc Thời Gian | Thành Phần Thực Thi | Hành Vi Chi Tiết Trên Phần Cứng & Phần Mềm | Trạng Thái Nguồn & Bộ Nhớ |
+|---|---|---|---|
+| **`T = 0 ms`** | Airbag SRS $\to$ **MCU** | Túi khí bung phát đồng thời khung CAN `SRS_CRASH` và xung PWM phần cứng vào chân ngắt của MCU; IMU trên TCU ghi nhận xung giảm tốc $\Delta V = -48\text{ km/h}$. | Nếu cáp bình `KL30 12V` bị đứt (`< 6V`), mạch nguồn chuyển mạch phần cứng `< 1 ms` sang **Pin dự phòng BUB**. |
+| **`T = 2 ms`** | **MCU** $\to$ `tcu-mcu-ipcd` | MCU kéo chân ngắt `MCU_INT_GPIO` và truyền khẩn qua SPI bản tin `MSG_CRASH_EVENT` (kèm cờ `URGENT_WAKE` & CRC-16). | Luồng `mcu-spi-trx` (`SCHED_FIFO 70`) thức dậy tức thì. |
+| **`T = 5 ms`** | `tcu-mcu-ipcd` $\to$ **`tcu-ecalld`** | Phát bản tin khẩn `TOPIC_EMERGENCY_TRIGGER` qua Unix Domain Socket tới `tcu-ecalld`. | Luồng `ecall-fsm-rt` (`SCHED_FIFO 80`) chiếm quyền CPU. |
+| **`T = 12 ms`** | **`tcu-ecalld`** $\to$ `tcu-platformd` & `otad` | Giữ `WakeLock(EMERGENCY)`, phát lệnh **Preempt**: hủy ngay mọi tiến trình tải OTA hoặc đồng bộ dữ liệu nền, khóa độc quyền Modem và Audio Codec; đổi đèn LED eCall sang nhấp nháy thông báo. | Giải phóng hoàn toàn băng thông mạng di động cho cuộc gọi khẩn cấp. |
+| **`T = 25 ms`** | **`tcu-ecalld`** | Truy xuất tọa độ GNSS hợp lệ mới nhất cùng 2 điểm lịch sử (`N-1`, `N-2`), số khung `VIN`, loại nhiên liệu và hướng di chuyển; đóng gói mảng nhị phân **140-byte MSD chuẩn CEN EN 15722**. | Tiêu tốn `< 4 KB` bộ nhớ Stack tĩnh (không cấp phát động tránh phân mảnh). |
+| **`T = 65 ms`** | **`tcu-ecalld`** $\to$ `IModemHAL` | Phát lệnh quay số khẩn cấp `112` (cờ `TS 122.101 Emergency Setup` — kết nối qua bất kỳ trạm BTS nhà mạng nào có sóng dù không đăng ký roaming). | **Đạt chuẩn SLA `< 100 ms` từ lúc va chạm đến lúc phát lệnh quay số!** |
+| **`T = 3.5 s`** | Modem $\to$ Tổng đài **PSAP** | Cuộc gọi kết nối; Modem truyền gói 140-byte MSD (qua In-band Modem hoặc SIP INFO với NG-eCall) và nhận xác nhận `LL-ACK` + `HL-ACK` từ tổng đài viên. | Nếu quá `20 giây` không nhận được ACK dữ liệu, tự động chuyển sang thoại để không mất liên lạc cứu hộ. |
+| **`T = 6.0 s`** | **`tcu-ecalld`** $\to$ `IAudioHAL` | Mở tuyến PCM 2 chiều kết nối Microphone & Loa cabin với khử vọng âm (AEC) để nạn nhân nói chuyện trực tiếp với nhân viên cứu hộ PSAP. | Pin BUB đảm bảo tối thiểu `>= 10 phút` đàm thoại liên tục + định vị GNSS. |
+| **Sau cuộc gọi**| **`tcu-ecalld`** | Khi PSAP gác máy, duy trì trạng thái **Callback Standby suốt 60 phút**: tự động bắt máy (`Auto-Answer`) và mở mic/loa nếu tổng đài cứu hộ gọi ngược lại. | Chỉ giải phóng `WakeLock` sau khi hết cửa sổ 60 phút. |
+
+---
+
+## 3. Luồng 3: Cập Nhật Phần Mềm Toàn Diện — Full Automotive OTA (`tcu-otad`)
+
+Kịch bản nâng cấp đồng thời cả **Firmware Companion MCU** và **Hệ điều hành Yocto Linux A/B RootFS** với cam kết không bao giờ biến thiết bị thành "cục gạch" (Zero-Brick Atomic Update):
 
 ```mermaid
 flowchart TD
-    subgraph STAGE1["GIAI ĐOẠN 1: Thu Nhận Hình Ảnh"]
-        direction LR
-        HW_CAM["Camera MIPI CSI-2\n(IMX219)"] -->|MIPI 2-lane| ISP["Tegra Hardware ISP\n(Demosaic, AE, AWB)"]
-        ISP -->|NV12 Raw| VIC["Hardware VIC\n(nvvidconv: NV12 -> BGR)"]
-        VIC -->|cv::Mat BGR| RBUF["Camera Ring Buffer\n(Capacity: 2 frames)"]
-    end
+    S1["Bước 1: Nhận Campaign & Tải nền HTTPS Range (HTTP 206)\nChạy ở mức ưu tiên I/O thấp nhất khi xe đang vận hành, tự nối lại nếu tắt máy giữa chừng"]
+    S2["Bước 2: Xác thực mật mã học tại /data/ota/\nKiểm tra chuỗi chứng chỉ X.509 / chữ ký Ed25519 + SHA-256 + Chống hạ cấp (Anti-Rollback)"]
+    S3["Bước 3: Cổng Kiểm Soát An Toàn Xe (Vehicle Safety Gate)\nBắt buộc: eCall == IDLE, Vận tốc == 0 km/h, Số == PARK, Khóa điện == OFF, Bình 12V >= 12.2V"]
+    S4["Bước 4: Cập nhật Firmware Companion MCU (Dual-Bank SPI DFU)\nTruyền từng khối 512B kèm CRC-16 vào Bank phụ của MCU -> Kiểm tra CRC32 toàn ảnh -> Swap & Reset MCU"]
+    S5["Bước 5: Cập nhật Yocto Linux qua RAUC (A/B RootFS)\nGhi luồng nén vào phân vùng nhàn rỗi (rootfs_a -> rootfs_b), đặt biến Bootloader thử nghiệm Slot B"]
+    S6["Bước 6: Khởi động lại vào Slot B & Hậu kiểm BIST (90 giây)\ntcu-diagd kiểm tra Modem + MCU IPC + Audio + Storage"]
+    S7_OK["BIST == PASS\ntcu-otad gọi 'rauc status mark-good'\nBáo cáo OTA_SUCCESS lên Cloud"]
+    S7_FAIL["BIST == FAIL hoặc Kernel treo (Watchdog Reset)\nBootloader tự động lùi (Rollback) về Slot A ổn định cũ\nBáo cáo OTA_ROLLED_BACK kèm mã lỗi"]
 
-    subgraph STAGE2["GIAI ĐOẠN 2: Tiền Xử Lý & Nạp Bộ Nhớ"]
-        direction LR
-        RBUF -->|Zero-Copy Con trỏ| PRE["Preprocessor (CPU)\nLetterbox 640x640, Norm [0,1], CHW"]
-        PRE -->|Host RAM: 2.46 MB| H2D["cudaMemcpyAsync (H2D)\nBăng thông LPDDR4: 25.6 GB/s"]
-    end
-
-    subgraph STAGE3["GIAI ĐOẠN 3: Suy Luận GPU (TensorRT FP16)"]
-        direction LR
-        H2D -->|Device VRAM: 2.46 MB| TRT["128 Maxwell CUDA Cores\nTensorRT Engine Execution"]
-        TRT -->|Device VRAM: 2.82 MB| D2H["cudaMemcpyAsync (D2H)\nTensor [1, 84, 8400]"]
-    end
-
-    subgraph STAGE4["GIAI ĐOẠN 4: Hậu Xử Lý, Tracking & Rule Engine"]
-        direction LR
-        D2H -->|Host RAM: 2.82 MB| POST["Postprocessor (CPU)\nDecode BBox, Class Filter, NMS IoU 0.50"]
-        POST -->|std::vector<Detection>| TRK["ByteTrack (CPU)\nKalman Filter + Hungarian Matching"]
-        TRK -->|std::vector<TrackedObject>| RULE["Rule Engine (CPU)\nRay-Casting Zone + Line Cross"]
-    end
-
-    subgraph STAGE5["GIAI ĐOẠN 5: Phân Phối Bất Đồng Bộ (Async Fan-out)"]
-        direction LR
-        RULE -->|Non-blocking Push| EBUS["EventBus Queue (RAM)\nThread 3 Dispatcher"]
-        EBUS -->|Async JSON| MQTT["MQTT Worker (Thread 6)\nTCP/TLS Publish Cloud"]
-        EBUS -->|Batch Data| SQL["Storage Writer (Thread 4)\nSQLite Transaction (SD Card)"]
-    end
-
-    STAGE1 --> STAGE2 --> STAGE3 --> STAGE4 --> STAGE5
+    S1 --> S2 --> S3 --> S4 --> S5 --> S6
+    S6 --> S7_OK
+    S6 --> S7_FAIL
 ```
 
 ---
 
-## 2. Chi Tiết Từng Bước Vận Hành (Step-by-Step Lifecycle)
+## 4. Luồng 4: Theo Dõi & Thu Hồi Xe Mất Cắp — Stolen Vehicle Tracking (`tcu-svtd`)
 
-Dưới đây là hành trình của 1 frame dữ liệu từ khi ánh sáng đi vào cảm biến camera đến khi bản tin telemetry được publish lên Cloud:
-
-### 🟢 Bước 1: Thu nhận Frame từ Cảm Biến (Frame Acquisition)
-* **Thread thực thi**: **Thread 2 (Camera Capture Thread)**
-* **Hành vi CPU**: Tải CPU rất thấp ($\approx 5\%$). CPU chỉ điều phối pipeline GStreamer thông qua kernel V4L2/Argus.
-* **Hành vi GPU**: Không sử dụng GPU 3D/Compute Cores. Thay vào đó, phần cứng chuyên dụng trên chip Tegra X1 hoạt động:
-  * **ISP (Image Signal Processor)**: Tự động cân bằng trắng (AWB), phơi sáng (AE) và chuyển đổi Bayer sang NV12.
-  * **VIC (Video Image Compositor / `nvvidconv`)**: Chuyển đổi màu từ NV12 sang BGR $1280 \times 720$.
-* **Hành vi RAM (Unified Memory)**:
-  * Frame được cấp phát trong vùng nhớ DMA phần cứng (`video/x-raw(memory:NVMM)`).
-  * `appsink` gói vùng nhớ thành `cv::Mat` BGR kích thước $1280 \times 720 \times 3 \text{ bytes} \approx \mathbf{2.76 \text{ MB}}$.
-* **Thời gian tiêu tốn**: $\mathbf{33.3 \text{ ms}}$ (chạy tuần hoàn liên tục ở tốc độ 30 FPS).
-
----
-
-### 🟢 Bước 2: Bàn giao Frame Zero-Latency (Ring Buffer Handoff)
-* **Thread thực thi**: **Thread 2 $\to$ Thread 1**
-* **Hành vi CPU**: Thread 2 khóa `std::mutex` của Camera Ring Buffer trong thời gian cực ngắn ($< 5\ \mu\text{s}$).
-* **Chính sách Drop Frame (Chống trễ)**: Nếu Thread 1 (AI) đang bận, Ring Buffer (size = 2) tự động hủy (`pop()`) frame cũ nhất, giữ lại frame mới nhất.
-* **Hành vi RAM**: **Zero-Copy**. Không sao chép 2.76 MB điểm ảnh, chỉ chuyển giao con trỏ tham chiếu (`std::move` và reference counting của `cv::Mat`).
-* **Thời gian tiêu tốn**: $\mathbf{< 0.01 \text{ ms}}$.
+1. **Tự động kích hoạt canh gác (`ARMED`)**: Ngay khi xe đỗ (`Speed = 0`, `KL15 = OFF`, `Doors = LOCKED`), `tcu-svtd` lưu tọa độ gốc $(\phi_0, \lambda_0)$ với bán kính hàng rào địa lý `100 m`, sau đó SA515M đi ngủ để tiết kiệm điện.
+2. **Phát hiện xâm phạm & Chuyển nguồn BUB tàng hình (`STOLEN_ACTIVE`)**:
+   * **Trường hợp A (Kẻ gian cắt bình ắc-quy 12V)**: Điện áp `KL30` sụt dưới `6.0V` $\to$ MCU chuyển tức thì sang **Pin dự phòng BUB**, kéo chân đánh thức SA515M kèm mã `WAKE_TAMPER_BATTERY_CUT`.
+   * **Trường hợp B (Xe bị cẩu kéo lên xe sàn trượt khi tắt máy)**: Cảm biến IMU trên MCU phát hiện góc nghiêng thay đổi `> 3.0°` hoặc rung động kéo dài không có chìa khóa hợp lệ $\to$ đánh thức SA515M kèm mã `WAKE_IMU_TOW_TILT`.
+3. **Truy vết ngầm & Lưu vết ngoại tuyến (Covert Tracking)**:
+   * TCU **tuyệt đối không bật đèn LED hay phát tiếng kêu** trong cabin để tránh bị kẻ trộm phát hiện tháo gỡ.
+   * Bật GNSS `10 Hz` kết hợp quét danh sách trạm phát sóng di động xung quanh (`Serving + Neighbor Cell-IDs` để định vị tương đối ngay cả khi xe bị giấu trong container/tầng hầm chắn sóng GPS).
+   * Bắn gói tin định vị mã hóa lên trung tâm an ninh OEM SOC mỗi **5 giây** khi xe di chuyển (tự động giãn thành **60 giây** khi xe đứng yên trên nguồn BUB để kéo dài thời gian sống trên `24 giờ`). Nếu đi vào vùng mất sóng di động, toàn bộ hành trình được mã hóa ghi vào bảng `telemetry_queue` trong SQLite và đẩy bù ngay khi có sóng lại.
+4. **Khóa khởi động từ xa có khóa liên động an toàn (Zero-Speed Safe Immobilizer)**:
+   * Khi chủ xe và cảnh sát xác nhận mất xe, Cloud SOC gửi lệnh có chữ ký số `SVT_ENGAGE_IMMOBILIZER`.
+   * Nếu xe đang chạy (`Speed > 0`), `tcu-svtd` giữ ở trạng thái `IMMOBILIZE_PENDING` (**tuyệt đối không ngắt động cơ khi xe đang lăn bánh** để tránh tai nạn giao thông).
+   * Ngay khi kẻ trộm dừng xe và tắt máy (`Speed == 0 km/h` và `KL15 == OFF` liên tục `>= 3 giây`), cả `tcu-svtd` và phần cứng MCU cùng xác nhận điều kiện an toàn rồi mới phát lệnh CAN khóa bộ đề xuống BCM, ngăn xe nổ máy trở lại.
 
 ---
 
-### 🟢 Bước 3: Tiền Xử Lý Hình Ảnh (Preprocessing - Letterbox)
-* **Thread thực thi**: **Thread 1 (Main Pipeline Thread)**
-* **Hành vi CPU**: 1 nhân ARM Cortex-A57 tính toán ma trận hình ảnh:
-  1. Tính tỷ lệ scale: $\min(640/1280, 640/720) = 0.5$. Resize ảnh về $640 \times 360$.
-  2. Bù viền trên/dưới $140\text{ px}$ với màu xám `(114, 114, 114)` tạo canvas vuông $640 \times 640$.
-  3. Đổi hệ màu BGR $\to$ RGB.
-  4. Chuẩn hóa pixel về đoạn $[0.0, 1.0]$ và đổi định dạng từ HWC sang CHW.
-* **Hành vi GPU**: GPU ở trạng thái chờ (Idle).
-* **Hành vi RAM**:
-  * Đọc `cv::Mat` gốc ($2.76\text{ MB}$).
-  * Ghi ra mảng host `std::vector<float>` CHW: $1 \times 3 \times 640 \times 640 \times 4\text{ bytes} \approx \mathbf{4.91 \text{ MB}}$ (hoặc $\mathbf{2.46 \text{ MB}}$ nếu cast FP16).
-* **Thời gian tiêu tốn**: $\mathbf{4.0 - 6.0 \text{ ms}}$.
+## 5. Luồng 5: Dịch Vụ Kiểm Thử & Chẩn Đoán — Test Service (`tcu-diagd` & `tcu-ctl`)
+
+Luồng này phục vụ 3 giai đoạn: **Tự kiểm tra trên xe (On-board BIST)**, **Chẩn đoán tại xưởng dịch vụ / dây chuyền nhà máy (EOL UDS ISO 14229)** và **Kiểm thử tự động phần mềm (CI/SIL/HIL Fault Injection)**:
+
+1. **Tự kiểm tra định kỳ (Periodic BIST — mỗi 30 giây)**:
+   * Kiểm tra kết nối SPI tới MCU, cường độ sóng Modem/SIM, dòng tiêu thụ ăng-ten chủ động GNSS (`2 mA .. 45 mA`), nội trở và dung lượng pin BUB (`SoH >= 70%`), và phát xung kiểm tra khép kín Codec âm thanh eCall.
+   * Nếu phát hiện đứt dây ăng-ten GNSS, `tcu-diagd` lập tức ghi mã lỗi bền vững `B1A01-13` vào bảng `dtc_records` kèm dữ liệu đóng băng (Freeze Frame: điện áp, nhiệt độ, vận tốc) và ra lệnh cho MCU đổi đèn LED eCall sang màu **Đỏ cảnh báo** theo luật UN R144.
+2. **Phục vụ máy chẩn đoán UDS qua cổng OBD-II / CAN (`ISO 14229`)**:
+   * Kỹ thuật viên cắm máy chẩn đoán gửi `0x22 FD 03` $\to$ MCU gom khung ISO-TP đẩy qua SPI lên `tcu-diagd` $\to$ trả về điện áp `KL30`, `BUB mV`, `SoC%`, `SoH%` trong vòng **`< 15 ms`** (vượt xa yêu cầu `P2_Server < 50 ms`).
+   * Kỹ thuật viên gửi `0x31 01 02 01` (**Routine: Start Test eCall**) $\to$ `tcu-diagd` kích hoạt `tcu-ecalld` với cờ `test_call = true` quay số tới tổng đài kiểm thử tự động thay vì số khẩn cấp `112`.
+3. **Tiêm sự kiện giả lập qua `tcu-ctl` (Phục vụ Dev & CI/QEMU)**:
+   * Trên Host PC hoặc máy ảo Yocto `qemuarm64`, kỹ sư chạy lệnh `tcu-ctl inject crash --delta-v 50` hoặc `tcu-ctl inject tamper --kl30-cut` để kiểm chứng đầu-cuối toàn bộ các máy trạng thái eCall, SVT và OTA mà không cần phá hủy phần cứng thật.
 
 ---
 
-### 🟢 Bước 4: Chuyển Vùng Nhớ Host $\to$ Device (Memory Copy H2D)
-* **Thread thực thi**: **Thread 1**
-* **Hành vi CPU**: Phát lệnh gọi hàm `cudaMemcpyAsync(..., cudaMemcpyHostToDevice, stream_)`.
-* **Hành vi GPU**: Bộ điều khiển DMA (Direct Memory Access) của Tegra X1 nạp dữ liệu vào VRAM dành riêng cho GPU.
-* **Hành vi RAM**: Băng thông bus LPDDR4 là $25.6\text{ GB/s}$. Truyền $2.46\text{ MB}$ dữ liệu FP16.
-* **Thời gian tiêu tốn**: $\mathbf{\approx 0.10 \text{ ms}}$ (cực nhanh trên kiến trúc bộ nhớ chia sẻ).
+## 6. Ma Trận Tổng Hợp Tài Nguyên & Cam Kết Thời Gian (Resource & SLA Matrix)
 
----
-
-### 🟢 Bước 5: Thực Thi Suy Luận Mạng Nơ-ron (TensorRT GPU Inference)
-* **Thread thực thi**: **Thread 1 $\to$ Maxwell GPU Driver**
-* **Hành vi CPU**: Thread 1 gọi `context_->enqueueV2()` và đồng bộ hóa qua `cudaStreamSynchronize(stream_)`. CPU tiêu thụ $< 5\%$ trong bước này (chủ yếu chờ GPU).
-* **Hành vi GPU**: **Hoạt động 100% công suất**.
-  * Cả 128 Maxwell CUDA Cores kích hoạt, chạy các phép toán nhân ma trận GEMM và tích chập (Convolution) ở chế độ bán chính xác **FP16**.
-  * Bộ nhớ đệm TensorRT Workspace cấp phát cố định $\approx \mathbf{128 \text{ MB}}$ trong GPU Memory.
-* **Hành vi RAM**: Tensor input được tính toán xuyên suốt các layer, sinh ra tensor đầu ra tại GPU device buffer: kích thước $1 \times 84 \times 8400 \times 4\text{ bytes} \approx \mathbf{2.82 \text{ MB}}$.
-* **Thời gian tiêu tốn**: $\mathbf{38.0 - 45.0 \text{ ms}}$ (đây là bước chiếm nhiều thời gian nhất của chu kỳ frame).
-
----
-
-### 🟢 Bước 6: Kéo Kết Quả Device $\to$ Host (Memory Copy D2H)
-* **Thread thực thi**: **Thread 1**
-* **Hành vi CPU**: Gọi `cudaMemcpyAsync(..., cudaMemcpyDeviceToHost, stream_)`.
-* **Hành vi GPU & RAM**: Sao chép $2.82\text{ MB}$ raw tensor kết quả từ GPU VRAM về RAM CPU (`host_output_tensor_`).
-* **Thời gian tiêu tốn**: $\mathbf{\approx 0.12 \text{ ms}}$.
-
----
-
-### 🟢 Bước 7: Hậu Xử Lý & Lọc Trùng Lặp (Postprocessing & NMS)
-* **Thread thực thi**: **Thread 1**
-* **Hành vi CPU**: CPU ARM xử lý $8400$ điểm neo (anchor points):
-  1. Duyệt qua 8400 anchor, lấy điểm confidence cao nhất trong 80 class.
-  2. Lọc bỏ các anchor có $\text{score} < 0.45$ (loại bỏ $\approx 99\%$ số anchor rác).
-  3. Nghịch đảo tọa độ bù viền (Unpad & Rescale) đưa box về độ phân giải gốc $1280 \times 720$.
-  4. Thuật toán **Non-Maximum Suppression (NMS)** chạy trên CPU với ngưỡng IoU $0.50$.
-* **Hành vi GPU**: GPU đã hoàn thành và nghỉ (Idle), sẵn sàng nhận frame tiếp theo.
-* **Hành vi RAM**: Đầu ra là `std::vector<Detection>` chứa khoảng $1 - 10$ vật thể, dung lượng heap tiêu tốn $\mathbf{< 1 \text{ KB}}$.
-* **Thời gian tiêu tốn**: $\mathbf{2.0 - 3.5 \text{ ms}}$.
-
----
-
-### 🟢 Bước 8: Bám Vết Đa Vật Thể (ByteTrack Multi-Object Tracking)
-* **Thread thực thi**: **Thread 1**
-* **Hành vi CPU**:
-  1. **Dự đoán Kalman**: Nhân ma trận chuyển trạng thái $8 \times 8$ để ngoại suy vị trí hộp $[x, y, a, h, v_x, v_y, v_a, v_h]$.
-  2. **Ghép cặp Hungarian**: Tính ma trận chi phí IoU giữa các Track cũ và Detection mới.
-  3. **Cập nhật trạng thái**: Gán `track_id` duy nhất, tính vận tốc di chuyển ($v_x, v_y$).
-* **Hành vi GPU**: Không sử dụng.
-* **Hành vi RAM**: Lưu danh sách các track đang hoạt động trong RAM, kích thước $\mathbf{< 10 \text{ KB}}$.
-* **Thời gian tiêu tốn**: $\mathbf{1.0 - 2.0 \text{ ms}}$.
-
----
-
-### 🟢 Bước 9: Đánh Giá Quy Tắc Nghiệp Vụ (Rule Engine Evaluation)
-* **Thread thực thi**: **Thread 1**
-* **Hành vi CPU**:
-  * **Zone Intrusion**: Thuật toán Ray-Casting kiểm tra tọa độ tâm vật thể có nằm trong đa giác Polygon hay không.
-  * **Line Crossing**: Tính tích có hướng (Cross-product) giữa vector đường thẳng và tọa độ vật thể để phát hiện xe vượt vạch.
-* **Hành vi GPU**: Không sử dụng.
-* **Hành vi RAM**: Nếu vi phạm quy tắc, tạo đối tượng `Alert` trên stack. Dung lượng $\mathbf{< 2 \text{ KB}}$.
-* **Thời gian tiêu tốn**: $\mathbf{0.1 - 0.2 \text{ ms}}$.
-
----
-
-### 🟢 Bước 10: Phân Phối Bất Đồng Bộ (EventBus Dispatching)
-* **Thread thực thi**: **Thread 1 $\to$ Thread 3 (EventBus Dispatcher)**
-* **Hành vi CPU**:
-  * Thread 1 đóng gói `PipelineResult`, đẩy vào hàng đợi `event_queue_` của EventBus và gọi `cv_.notify_one()`. **Thread 1 hoàn tất chu kỳ frame và quay lại Bước 1 ngay lập tức**.
-  * Thread 3 thức dậy từ trạng thái `wait()`, lấy event ra và gọi các hàm callback đăng ký của `MqttService` và `StorageService`.
-* **Hành vi RAM**: Payload event nằm trong bộ nhớ RAM tạm thời ($\approx 5\text{ KB}$).
-* **Thời gian tiêu tốn của Thread 1**: $\mathbf{< 0.05 \text{ ms}}$ (Thread 1 không bị nghẽn).
-
----
-
-### 🟢 Bước 11: Xuất Bản Telemetry Mạng & Lưu Trữ Đĩa (MQTT & SQLite Batch)
-* **Thread thực thi**: **Thread 6 (MQTT Worker)** và **Thread 4 (Storage Writer)**
-* **Hành vi CPU**:
-  * **Thread 6 (MQTT)**: Tuần tự hóa JSON, gọi thư viện Paho MQTT gửi gói tin Publish QoS 1 qua socket TCP. Tự động chuyển vào hàng đợi ngoại tuyến (Offline Queue) nếu mất mạng.
-  * **Thread 4 (Storage)**: Gom mẻ các bản ghi detection, mở Transaction và thực thi lệnh ghi Batch xuống SQLite sau mỗi 5 giây.
-* **Hành vi GPU**: Không sử dụng.
-* **Hành vi RAM**: Cache SQLite WAL mode tiêu tốn khoảng $10 - 20\text{ MB}$ RAM.
-* **Thời gian tiêu tốn**: Chạy hoàn toàn ngầm ở background, không ảnh hưởng đến FPS của hệ thống AI.
-
----
-
-### 🟢 Bước 12: Giám Sát Phần Cứng & Đá Watchdog (Định Kỳ)
-* **Thread thực thi**: **Thread 5 (Health & Watchdog Thread)**
-* **Tần số**: Chạy độc lập mỗi **30 giây một lần**.
-* **Hành vi CPU & Driver**:
-  * Đọc sysfs `/sys/devices/virtual/thermal/thermal_zone1/temp` (CPU) và `thermal_zone2/temp` (GPU).
-  * Gọi `ioctl(fd, WDIOC_KEEPALIVE, 0)` để reset bộ đếm phần cứng `/dev/watchdog`.
-  * Nếu nhiệt độ CPU $> 85^\circ\text{C}$ hoặc GPU $> 90^\circ\text{C}$, phát sinh sự kiện cảnh báo khẩn cấp lên EventBus.
-* **Thời gian tiêu tốn**: $\mathbf{\approx 0.5 \text{ ms}}$ mỗi chu kỳ 30 giây.
-
----
-
-## 3. Ma Trận Phân Bổ Tài Nguyên (Resource Allocation Matrix)
-
-Bảng tổng hợp chi tiết tài nguyên của từng bước trong 1 chu kỳ xử lý frame ($1280 \times 720 \to 640 \times 640$):
-
-| Bước | Tên Công Việc | Thread Phụ Trách | CPU Load (%) | GPU Load (%) | RAM Biến Động | Độ Trễ (Latency) |
-|:---:|---|:---:|:---:|:---:|:---:|:---:|
-| **1** | Camera Capture (ISP + VIC) | Thread 2 | 5% – 8% | 0% (Dùng ISP) | +2.76 MB (Frame BGR) | 33.3 ms (30 FPS rate) |
-| **2** | Buffer Handoff (Zero-copy) | Thread 2 $\to$ 1 | < 1% | 0% | 0 MB (Chỉ đổi con trỏ) | < 0.01 ms |
-| **3** | Preprocessing (Letterbox) | Thread 1 | 25% – 35% | 0% | +2.46 MB (FP16 CHW) | 4.0 – 6.0 ms |
-| **4** | Memcpy Host $\to$ Device | Thread 1 | < 1% | DMA Controller | Truyền 2.46 MB vào VRAM | ~0.10 ms |
-| **5** | **TensorRT GPU Inference** | **Thread 1** | **< 5%** | **100% (128 Cores)**| **128 MB VRAM Workspace** | **38.0 – 45.0 ms** |
-| **6** | Memcpy Device $\to$ Host | Thread 1 | < 1% | DMA Controller | Kéo 2.82 MB về RAM | ~0.12 ms |
-| **7** | Postprocessing & NMS | Thread 1 | 20% – 30% | 0% | +1 KB (Heap detections) | 2.0 – 3.5 ms |
-| **8** | ByteTrack Tracking | Thread 1 | 10% – 15% | 0% | +10 KB (Track state) | 1.0 – 2.0 ms |
-| **9** | Rule Engine Check | Thread 1 | < 2% | 0% | < 2 KB (Alert object) | 0.1 – 0.2 ms |
-| **10**| EventBus Enqueue | Thread 1 $\to$ 3 | < 1% | 0% | +5 KB (Queue payload) | < 0.05 ms |
-| **11**| MQTT Publish & SQLite Batch| Thread 6 & 4 | 2% – 5% | 0% | 15 – 20 MB (Cache SQLite) | Không block (< 2 ms ngầm) |
-| **12**| Health Monitor & Watchdog | Thread 5 | < 0.5% | 0% | < 1 MB | 0.5 ms (mỗi 30s) |
-
----
-
-## 4. Biểu Đồ Thời Gian Thực Thi (Timing & Pipeline Timeline)
-
-Tổng thời gian xử lý của **Thread 1 (Main Pipeline Thread)** cho 1 frame:
-$$\text{Total Latency} = T_{\text{pre}} (5\text{ms}) + T_{\text{H2D}} (0.1\text{ms}) + T_{\text{infer}} (42\text{ms}) + T_{\text{D2H}} (0.1\text{ms}) + T_{\text{post}} (2.5\text{ms}) + T_{\text{track}} (1.5\text{ms}) + T_{\text{rule}} (0.2\text{ms}) \approx \mathbf{51.4 \text{ ms}}$$
-
-$$\text{Tốc độ khung hình thực tế (FPS)} = \frac{1000 \text{ ms}}{51.4 \text{ ms}} \approx \mathbf{19.45 \text{ FPS}}$$
-
-```
-Thread 1 (Main Loop):
-|--Pre (5ms)--|--H2D--|------- TensorRT GPU (42ms) -------|--D2H--|--Post (2.5ms)--|--Track (1.5ms)--|-> [Frame N hoàn thành]
-                                                                                                        |--Pre (Frame N+1) ...
-
-Thread 2 (Camera):
-[Frame N: 33ms] ──────────────────────────► [Frame N+1: 33ms] ──────────────────────────► [Frame N+2: 33ms] ─────────►
-```
-
-> **Nhận xét quan trọng**: Trong lúc GPU đang tính toán ($42\text{ ms}$), CPU hoàn toàn rảnh rỗi trên luồng Inference, nhờ đó các luồng khác như Thread 2 (Camera), Thread 4 (Storage) và Thread 6 (MQTT) có đầy đủ chu kỳ CPU để hoạt động mượt mà mà không gây nghẽn cổ chai (bottleneck).
-
----
-
-## 5. Chiến Lược Quản Lý Bộ Nhớ (Unified RAM Budget)
-
-Jetson Nano sở hữu **4GB LPDDR4 Unified Memory** dùng chung cho cả CPU và GPU. Dưới đây là bảng phân bổ an toàn để tránh bị kích hoạt **Kernel OOM-Killer**:
-
-| Thành Phần Bộ Nhớ | Dung Lượng Chiếm Dụng | Ghi Chú Kỹ Thuật |
-|---|---|---|
-| **Yocto Minimal Linux OS** | ~320 MB | Đã loại bỏ Desktop UI (X11/Wayland), chỉ chạy systemd & drivers |
-| **NVIDIA Driver & CUDA Context** | ~180 MB | Nạp khi gọi `cudaStreamCreate` lần đầu |
-| **TensorRT Engine Workspace** | ~128 MB | VRAM cấp phát cho các lớp TensorRT execution |
-| **YOLOv8 Weights & Parameters** | ~14 MB | Trọng số mạng nơ-ron FP16 |
-| **Input/Output CUDA Buffers** | ~6 MB | Cố định 2.46 MB in + 2.82 MB out (tái sử dụng, không cấp phát lại) |
-| **OpenCV & Frame Ring Buffers** | ~15 MB | Tối đa 2 frames 720p đồng thời |
-| **SQLite Page Cache & WAL** | ~25 MB | Giới hạn dung lượng cache SQLite trong RAM |
-| **Paho MQTT Offline Queue (500 msgs)**| ~5 MB | Lưu tạm thời bản tin JSON khi rớt mạng |
-| **Stack & Heap của ứng dụng C++** | ~30 MB | Biến cục bộ, đối tượng Tracker và Rule Engine |
-| **TỔNG BỘ NHỚ SỬ DỤNG** | **~723 MB** | **Chiếm ~18% tổng dung lượng RAM** |
-| **DUNG LƯỢNG RAM DỰ PHÒNG CÒN TRỐNG** | **> 3.2 GB TRỐNG** | **An toàn tuyệt đối, không bao giờ bị tràn RAM (OOM)** |
-
+| Kịch Bản Vận Hành | Tiến Trình Chủ Đạo | CPU Load | RAM Chiếm Dụng | Nguồn Cung Cấp | Mức Tiêu Thụ Điện @ 12V | Cam Kết Độ Trễ (SLA) |
+|---|---|---|---|---|---|---|
+| **Đỗ xe ngủ sâu (Deep Sleep)** | Chỉ **MCU** chạy (Linux OFF) | `0%` (SoC) | `0 MB` (SoC OFF) | Bình 12V `KL30` | **`< 0.8 mA`** | Đánh thức MCU `< 50 ms`, Boot Linux `< 8 s` |
+| **Chạy bình thường (Normal Cruise)**| `mcu-ipcd`, `platformd`, `diagd`| `8% – 14%` | `~145 MB` tổng | Bình 12V `KL30` | `75 mA – 110 mA` | Chu kỳ CAN `10 Hz`, GNSS `1 Hz`, UDS `< 50 ms` |
+| **Tai nạn khẩn cấp (Active eCall)** | **`tcu-ecalld` (`FIFO 80`)** | `15% – 22%`| `~155 MB` tổng | `KL30` hoặc **Pin BUB** | `350 mA – 600 mA` | Phát hiện va chạm $\to$ Quay số `112` **`< 100 ms`** |
+| **Truy vết mất cắp (SVT Active)** | **`tcu-svtd`**, `platformd` | `10% – 16%`| `~150 MB` tổng | `KL30` hoặc **Pin BUB** | `180 mA` (chạy) / `15 mA` (đứng yên)| Phát hiện cắt bình $\to$ Bắn cảnh báo **`< 3 s`** |
+| **Nâng cấp hệ thống (Full OTA)** | **`tcu-otad`**, `rauc`, `mcu-ipcd`| `25% – 40%`| `~191 MB` đỉnh | Bình 12V (`>= 12.2V`) | `220 mA – 400 mA` | Cài đặt Slot B `< 3 phút`, Hậu kiểm BIST `< 90 s` |
