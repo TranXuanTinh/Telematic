@@ -1,0 +1,7 @@
+test_common_protocols 4 0.00396831
+test_mcu_protocol_and_sim 4 0.0130782
+test_ecall_workflow 4 0.190627
+test_ota_workflow 1 0.571241
+test_svt_workflow 3 0.450834
+test_diag_and_uds 3 0.314467
+---

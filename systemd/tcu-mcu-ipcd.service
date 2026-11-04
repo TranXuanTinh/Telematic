@@ -1,0 +1,27 @@
+[Unit]
+Description=TCU Companion MCU SPI/UART Bridge & Intra-SoC UDS Broker
+PartOf=tcu-telematics.target
+After=local-fs.target
+
+[Service]
+Type=notify
+User=tcu
+Group=tcu
+SupplementaryGroups=dialout spi
+RuntimeDirectory=tcu
+ExecStart=/usr/bin/tcu-mcu-ipcd --config /etc/tcu/tcu_config.yaml --runtime-dir /run/tcu
+Restart=always
+RestartSec=1
+WatchdogSec=15
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=60
+AmbientCapabilities=CAP_SYS_NICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/run/tcu /data
+
+[Install]
+WantedBy=tcu-telematics.target
+

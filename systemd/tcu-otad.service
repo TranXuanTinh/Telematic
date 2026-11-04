@@ -1,0 +1,26 @@
+[Unit]
+Description=TCU Dual-Domain OTA Update Manager (UN ECE R156 / RAUC A/B + MCU DFU)
+PartOf=tcu-telematics.target
+Requires=tcu-mcu-ipcd.service tcu-platformd.service
+After=tcu-mcu-ipcd.service tcu-platformd.service tcu-diagd.service
+
+[Service]
+Type=notify
+User=tcu
+Group=tcu
+ExecStart=/usr/bin/tcu-otad --config /etc/tcu/tcu_config.yaml --runtime-dir /run/tcu
+Restart=on-failure
+RestartSec=5
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/run/tcu /data
+ReadOnlyPaths=/factory
+
+[Install]
+WantedBy=tcu-telematics.target
+

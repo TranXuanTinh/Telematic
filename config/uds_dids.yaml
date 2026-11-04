@@ -1,0 +1,45 @@
+# ISO 14229-1 Unified Diagnostic Services (UDS) Configuration
+# Data Identifiers (DIDs), Routine Identifiers (RIDs), and DTC Definitions
+
+uds_server:
+  rx_can_id: 0x767
+  tx_can_id: 0x76F
+  p2_server_max_ms: 50
+  s3_session_timeout_ms: 5000
+
+dids:
+  0xF190:
+    name: "VINDataIdentifier"
+    writable_in_eol: true
+  0xF189:
+    name: "ApplicationSoftwareVersion"
+    writable_in_eol: false
+  0xFD01:
+    name: "LiveGnssPositionAndAntenna"
+    writable_in_eol: false
+  0xFD02:
+    name: "CellularModemAndNetworkStatus"
+    writable_in_eol: false
+  0xFD03:
+    name: "PowerAndBackupBatteryHealth"
+    writable_in_eol: false
+  0xFD04:
+    name: "DualBankOtaSlotStatus"
+    writable_in_eol: false
+  0xFD05:
+    name: "StolenVehicleTrackingSecurityState"
+    requires_extended_session: true
+
+routines:
+  0x0201: "TriggerNonEmergencyTestECall"
+  0x0202: "ExecuteAudioCodecLoopbackSelfTest"
+  0x0203: "TriggerComprehensiveSubsystemBIST"
+
+dtcs:
+  B1A01-13: "GNSS Active Antenna Circuit Open"
+  B1A01-11: "GNSS Active Antenna Circuit Short To Ground"
+  B1A02-01: "eCall Backup Battery State-of-Health Degraded"
+  B1A03-01: "eCall Cabin Audio Loopback Self-Test Failed"
+  U0100-87: "Lost SPI/UART Communication With Companion MCU"
+  U0140-87: "Lost CAN Communication With Body Control Module"
+

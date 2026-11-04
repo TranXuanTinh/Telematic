@@ -1,0 +1,28 @@
+[Unit]
+Description=TCU Emergency Call Daemon (CEN EN 15722 / UN ECE R144)
+PartOf=tcu-telematics.target
+Requires=tcu-mcu-ipcd.service tcu-platformd.service
+After=tcu-mcu-ipcd.service tcu-platformd.service
+
+[Service]
+Type=notify
+User=tcu
+Group=tcu
+ExecStart=/usr/bin/tcu-ecalld --config /etc/tcu/tcu_config.yaml --runtime-dir /run/tcu
+Restart=always
+RestartSec=500ms
+WatchdogSec=10
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=80
+AmbientCapabilities=CAP_SYS_NICE CAP_IPC_LOCK
+LimitMEMLOCK=infinity
+OOMScoreAdjust=-900
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/run/tcu
+
+[Install]
+WantedBy=tcu-telematics.target
+

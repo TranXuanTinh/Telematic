@@ -1,0 +1,25 @@
+[Unit]
+Description=TCU Platform Services Daemon (Modem, Multi-GNSS, Audio, Cloud & SQLite Queue)
+PartOf=tcu-telematics.target
+Requires=tcu-mcu-ipcd.service
+After=tcu-mcu-ipcd.service network.target
+
+[Service]
+Type=notify
+User=tcu
+Group=tcu
+SupplementaryGroups=dialout audio
+ExecStart=/usr/bin/tcu-platformd --config /etc/tcu/tcu_config.yaml --runtime-dir /run/tcu
+Restart=always
+RestartSec=2
+WatchdogSec=15
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/run/tcu /data
+ReadOnlyPaths=/factory
+
+[Install]
+WantedBy=tcu-telematics.target
+

@@ -1,109 +1,128 @@
-cmake_minimum_required(VERSION 3.14)
-project(edge-ai-manager VERSION 1.0.0 LANGUAGES C CXX)
+cmake_minimum_required(VERSION 3.16)
+project(tcu-telematics VERSION 2.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Optimization Flags
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    add_compile_options(-g -O0 -Wall -Wextra)
-else()
-    add_compile_options(-O3 -Wall -Wextra)
+include(GNUInstallDirs)
+
+option(USE_MOCK_HAL      "Default daemons to Mock HAL when hal_mode is not explicitly sa515m" ON)
+option(ENABLE_SA515M_HAL "Compile Qualcomm SA515M / Linux production HAL backends" ON)
+option(BUILD_TESTS       "Build automated unit and multi-daemon integration test suites" ON)
+
+find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED)
+find_package(SQLite3 REQUIRED)
+find_package(PkgConfig QUIET)
+
+if(PkgConfig_FOUND)
+    pkg_check_modules(YAML_CPP QUIET IMPORTED_TARGET yaml-cpp)
+    pkg_check_modules(SPDLOG   QUIET IMPORTED_TARGET spdlog)
+    pkg_check_modules(CURL     QUIET IMPORTED_TARGET libcurl)
 endif()
 
-# Build Options
-option(ENABLE_JETSON_CUDA "Enable CUDA & TensorRT hardware acceleration" OFF)
-option(ENABLE_PAHO_MQTT   "Link Eclipse Paho MQTT C client" OFF)
-option(ENABLE_SQLITE3     "Link SQLite3 database engine" OFF)
-option(ENABLE_YAML_CPP    "Link yaml-cpp parser library" OFF)
-option(BUILD_TESTS        "Build unit tests" OFF)
+set(TCU_CORE_SOURCES
+    # Common utilities & automotive codecs
+    src/common/crc.cpp
+    src/common/msd_codec.cpp
+    src/common/geo_math.cpp
+    src/common/json_mini.cpp
+    src/common/config_loader.cpp
+    src/common/logger.cpp
 
-# Include Directories
-include_directories(
+    # Intra-SoC Sequenced UDS IPC (libtcu-ipc)
+    src/ipc/uds_broker.cpp
+    src/ipc/ipc_client.cpp
+
+    # Tier 3 Hardware Abstraction Layer (Production + Host/QEMU Mock)
+    src/hal/sa515m/openssl_crypto_hal.cpp
+    src/hal/sa515m/sqlite_storage_hal.cpp
+    src/hal/sa515m/sa515m_hals.cpp
+    src/hal/mock/mock_hals.cpp
+
+    # Tier 2 Platform-Independent Services
+    src/service/mcu_protocol_service.cpp
+    src/service/power_manager_service.cpp
+    src/service/gnss_service.cpp
+    src/service/persistent_store_service.cpp
+    src/service/uds_diagnostics_service.cpp
+
+    # Tier 1 Orchestrators & Virtual Companion MCU Model
+    src/app/mcu_simulator.cpp
+    src/app/mcu_ipc_orchestrator.cpp
+    src/app/platform_orchestrator.cpp
+    src/app/ecall_orchestrator.cpp
+    src/app/ota_orchestrator.cpp
+    src/app/svt_orchestrator.cpp
+    src/app/diag_orchestrator.cpp
+)
+
+add_library(tcu-core STATIC ${TCU_CORE_SOURCES})
+
+target_include_directories(tcu-core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-# Core Sources (App, Service, Mock HAL, Jetson HAL)
-set(SOURCES
-    # App Layer
-    src/app/main.cpp
-    src/app/edge_ai_manager.cpp
-    src/app/pipeline.cpp
-    src/app/rule_engine.cpp
-    src/app/rules/zone_rule.cpp
-    src/app/rules/counting_rule.cpp
+target_compile_options(tcu-core PRIVATE -Wall -Wextra -Wpedantic)
 
-    # Service Layer
-    src/service/event_bus.cpp
-    src/service/preprocessor.cpp
-    src/service/postprocessor.cpp
-    src/service/camera_service.cpp
-    src/service/inference_service.cpp
-    src/service/kalman_filter.cpp
-    src/service/hungarian.cpp
-    src/service/tracker_service.cpp
-    src/service/mqtt_service.cpp
-    src/service/storage_service.cpp
-    src/service/health_service.cpp
-    src/service/config_service.cpp
-    src/service/log_service.cpp
-
-    # Jetson HAL
-    src/hal/jetson/jetson_camera_hal.cpp
-    src/hal/jetson/jetson_gpu_hal.cpp
-    src/hal/jetson/jetson_network_hal.cpp
-    src/hal/jetson/jetson_storage_hal.cpp
-    src/hal/jetson/jetson_sensor_hal.cpp
-    src/hal/jetson/jetson_watchdog_hal.cpp
+target_link_libraries(tcu-core PUBLIC
+    Threads::Threads
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    SQLite::SQLite3
 )
 
-# OpenCV Dependency
-find_package(OpenCV REQUIRED)
-include_directories(${OpenCV_INCLUDE_DIRS})
-
-# Conditional Dependencies
-set(EXTRA_LIBS "")
-
-if(ENABLE_JETSON_CUDA)
-    add_definitions(-DENABLE_JETSON_CUDA)
-    find_package(CUDA REQUIRED)
-    include_directories(${CUDA_INCLUDE_DIRS})
-    list(APPEND EXTRA_LIBS ${CUDA_LIBRARIES} nvinfer nvonnxparser)
+if(USE_MOCK_HAL)
+    target_compile_definitions(tcu-core PUBLIC TCU_DEFAULT_MOCK_HAL=1)
 endif()
 
-if(ENABLE_PAHO_MQTT)
-    add_definitions(-DENABLE_PAHO_MQTT)
-    list(APPEND EXTRA_LIBS paho-mqtt3a paho-mqtt3c)
+if(YAML_CPP_FOUND)
+    target_compile_definitions(tcu-core PUBLIC ENABLE_YAML_CPP=1)
+    target_link_libraries(tcu-core PUBLIC PkgConfig::YAML_CPP)
 endif()
 
-if(ENABLE_SQLITE3)
-    add_definitions(-DENABLE_SQLITE3)
-    find_package(SQLite3 REQUIRED)
-    list(APPEND EXTRA_LIBS SQLite::SQLite3)
+if(SPDLOG_FOUND)
+    target_compile_definitions(tcu-core PUBLIC ENABLE_SPDLOG=1)
+    target_link_libraries(tcu-core PUBLIC PkgConfig::SPDLOG)
 endif()
 
-if(ENABLE_YAML_CPP)
-    add_definitions(-DENABLE_YAML_CPP)
-    find_package(yaml-cpp REQUIRED)
-    list(APPEND EXTRA_LIBS yaml-cpp)
+if(CURL_FOUND)
+    target_compile_definitions(tcu-core PUBLIC ENABLE_CURL=1)
+    target_link_libraries(tcu-core PUBLIC PkgConfig::CURL)
 endif()
 
-# Target Executable
-add_executable(edge-ai-manager ${SOURCES})
-target_link_libraries(edge-ai-manager PRIVATE ${OpenCV_LIBS} ${EXTRA_LIBS})
+# ----------------------------------------------------------------------------
+# 6 Linux Telematics Daemons + Virtual MCU Simulator + CLI Diagnostic Tool
+# ----------------------------------------------------------------------------
+function(add_tcu_executable target_name source_path)
+    add_executable(${target_name} ${source_path})
+    target_compile_options(${target_name} PRIVATE -Wall -Wextra -Wpedantic)
+    target_link_libraries(${target_name} PRIVATE tcu-core)
+    install(TARGETS ${target_name} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endfunction()
 
-# Posix Threads
-find_package(Threads REQUIRED)
-target_link_libraries(edge-ai-manager PRIVATE Threads::Threads)
+add_tcu_executable(tcu-mcu-ipcd  src/daemons/mcu_ipcd/main.cpp)
+add_tcu_executable(tcu-platformd src/daemons/platformd/main.cpp)
+add_tcu_executable(tcu-ecalld    src/daemons/ecalld/main.cpp)
+add_tcu_executable(tcu-otad      src/daemons/otad/main.cpp)
+add_tcu_executable(tcu-svtd      src/daemons/svtd/main.cpp)
+add_tcu_executable(tcu-diagd     src/daemons/diagd/main.cpp)
+add_tcu_executable(tcu-mcu-sim   src/tools/mcu_sim/main.cpp)
+add_tcu_executable(tcu-ctl       src/tools/tcu_ctl/main.cpp)
 
-# Installation Targets for Yocto Packaging
-install(TARGETS edge-ai-manager DESTINATION /usr/bin)
-install(DIRECTORY config/ DESTINATION /opt/jetson-ai-detect/config)
-install(DIRECTORY models/ DESTINATION /opt/jetson-ai-detect/models)
+install(FILES
+    config/tcu_config.yaml
+    config/uds_dids.yaml
+    DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/tcu
+)
 
-# Unit Testing
+install(DIRECTORY systemd/
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/systemd/system
+    FILES_MATCHING PATTERN "*.service" PATTERN "*.target"
+)
+
 if(BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)

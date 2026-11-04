@@ -1,0 +1,99 @@
+Start testing: Nov 04 09:20 +07
+----------------------------------------------------------
+1/6 Testing: test_common_protocols
+1/6 Test: test_common_protocols
+Command: "/media/tinhtran/01D85BC599D1D460/FreeLancer/Telematic/build/tests/test_common_protocols"
+Directory: /media/tinhtran/01D85BC599D1D460/FreeLancer/Telematic/build/tests
+"test_common_protocols" start time: Nov 04 09:20 +07
+Output:
+----------------------------------------------------------
+[PASS] test_common_protocols
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"test_common_protocols" end time: Nov 04 09:20 +07
+"test_common_protocols" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/6 Testing: test_mcu_protocol_and_sim
+2/6 Test: test_mcu_protocol_and_sim
+Command: "/media/tinhtran/01D85BC599D1D460/FreeLancer/Telematic/build/tests/test_mcu_protocol_and_sim"
+Directory: /media/tinhtran/01D85BC599D1D460/FreeLancer/Telematic/build/tests
+"test_mcu_protocol_and_sim" start time: Nov 04 09:20 +07
+Output:
+----------------------------------------------------------
+[PASS] test_mcu_protocol_and_sim
+<end of output>
+Test time =   0.05 sec
+----------------------------------------------------------
+Test Passed.
+"test_mcu_protocol_and_sim" end time: Nov 04 09:20 +07
+"test_mcu_protocol_and_sim" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/6 Testing: test_ecall_workflow
+3/6 Test: test_ecall_workflow
+Command: "/media/tinhtran/01D85BC599D1D460/FreeLancer/Telematic/build/tests/test_ecall_workflow"
+Directory: /media/tinhtran/01D85BC599D1D460/FreeLancer/Telematic/build/tests
+"test_ecall_workflow" start time: Nov 04 09:20 +07
+Output:
+----------------------------------------------------------
+[PASS] test_ecall_workflow (trigger-to-dial latency = 1 ms)
+<end of output>
+Test time =   0.76 sec
+----------------------------------------------------------
+Test Passed.
+"test_ecall_workflow" end time: Nov 04 09:20 +07
+"test_ecall_workflow" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/6 Testing: test_ota_workflow
+4/6 Test: test_ota_workflow
+Command: "/media/tinhtran/01D85BC599D1D460/FreeLancer/Telematic/build/tests/test_ota_workflow"
+Directory: /media/tinhtran/01D85BC599D1D460/FreeLancer/Telematic/build/tests
+"test_ota_workflow" start time: Nov 04 09:20 +07
+Output:
+----------------------------------------------------------
+[PASS] test_ota_workflow
+<end of output>
+Test time =   0.57 sec
+----------------------------------------------------------
+Test Passed.
+"test_ota_workflow" end time: Nov 04 09:20 +07
+"test_ota_workflow" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/6 Testing: test_svt_workflow
+5/6 Test: test_svt_workflow
+Command: "/media/tinhtran/01D85BC599D1D460/FreeLancer/Telematic/build/tests/test_svt_workflow"
+Directory: /media/tinhtran/01D85BC599D1D460/FreeLancer/Telematic/build/tests
+"test_svt_workflow" start time: Nov 04 09:20 +07
+Output:
+----------------------------------------------------------
+[PASS] test_svt_workflow
+<end of output>
+Test time =   1.35 sec
+----------------------------------------------------------
+Test Passed.
+"test_svt_workflow" end time: Nov 04 09:20 +07
+"test_svt_workflow" time elapsed: 00:00:01
+----------------------------------------------------------
+
+6/6 Testing: test_diag_and_uds
+6/6 Test: test_diag_and_uds
+Command: "/media/tinhtran/01D85BC599D1D460/FreeLancer/Telematic/build/tests/test_diag_and_uds"
+Directory: /media/tinhtran/01D85BC599D1D460/FreeLancer/Telematic/build/tests
+"test_diag_and_uds" start time: Nov 04 09:20 +07
+Output:
+----------------------------------------------------------
+[PASS] test_diag_and_uds
+<end of output>
+Test time =   0.94 sec
+----------------------------------------------------------
+Test Passed.
+"test_diag_and_uds" end time: Nov 04 09:20 +07
+"test_diag_and_uds" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Nov 04 09:20 +07

@@ -73,9 +73,9 @@ Production-architected **Dual-Compute Domain Telematics Control Unit (TCU)** eng
 
 ---
 
-## 📁 Target Repository Structure
+## 📁 Repository Structure
 
-> **Project Status**: **Phase 1 — Architecture & Design Specification Complete**. Phase 2 will refactor the legacy template implementation (`include/`, `src/`, `tests/`, `systemd/`, `yocto/`) to match the target multi-daemon TCU layout specified below:
+> **Project Status**: **Phase 1 & Phase 2 Complete — Full C++17 Multi-Daemon Implementation, Yocto Layer & Automated Test Suite**.
 
 ```text
 ├── docs/                            # Complete SysRS, SRS, SDD, HLD, SWDD, LLD, Workflow & Setup specs
@@ -93,15 +93,17 @@ Production-architected **Dual-Compute Domain Telematics Control Unit (TCU)** eng
 │   ├── hal/{sa515m,mock}/           # Concrete SA515M Linux HALs & Host/QEMU Mock HALs
 │   ├── daemons/                     # tcu-mcu-ipcd, tcu-platformd, tcu-ecalld, tcu-otad, tcu-svtd, tcu-diagd
 │   └── tools/                       # tcu-ctl (CLI fault injector & UDS client) & tcu-mcu-sim (Virtual MCU)
-├── tests/                           # Unit & multi-daemon integration test suites
+├── scripts/
+│   └── run_mock_cluster.sh          # One-command Host PC 7-process simulation cluster launcher
+├── tests/                           # Unit & multi-daemon integration test suites (6 CTest targets)
 ├── systemd/                         # Hardened non-root systemd service units & watchdog configs
-├── yocto/meta-tcu-telematics/       # Custom Yocto layer (daemon recipes, RAUC config, tcu-telematics-image.bb)
+├── yocto/meta-tcu-telematics/       # Custom Yocto layer (tcu-suite_1.0.bb, RAUC config, tcu-telematics-image.bb)
 └── CMakeLists.txt                   # Unified CMake build definition
 ```
 
 ---
 
-## 🚀 Quickstart Preview (Target Build Commands)
+## 🚀 Quickstart Build & Verification Commands
 
 ### 1. Host PC Hardware-Free Simulation (`MockHAL` + `tcu-mcu-sim`)
 ```bash

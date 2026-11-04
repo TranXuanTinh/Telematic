@@ -1,0 +1,8 @@
+[Unit]
+Description=Automotive Telematics Control Unit (TCU) Application Suite
+After=network.target local-fs.target
+Wants=tcu-mcu-ipcd.service tcu-platformd.service tcu-ecalld.service tcu-otad.service tcu-svtd.service tcu-diagd.service
+
+[Install]
+WantedBy=multi-user.target
+

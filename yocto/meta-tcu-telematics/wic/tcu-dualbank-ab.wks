@@ -1,0 +1,18 @@
+# Automotive TCU Dual-Bank A/B GPT Partition Layout (.wks for OpenEmbedded WIC)
+# Matches SDD Section 4 Flash Partition Specification:
+#   p1: boot_a   (64 MB,  FAT32/ext4 Kernel + DTB Slot A)
+#   p2: boot_b   (64 MB,  FAT32/ext4 Kernel + DTB Slot B)
+#   p3: rootfs_a (384 MB, Read-Only SquashFS/ext4 Slot A)
+#   p4: rootfs_b (384 MB, Read-Only SquashFS/ext4 Slot B)
+#   p5: factory  (16 MB,  Immutable X.509 OTA Root CA, VIN, Device Identity)
+#   p6: data     (512 MB, Persistent SQLite WAL DB, Encrypted SVT Queue & OTA Staging)
+
+bootloader --ptable gpt --timeout=1 --append="rootwait console=ttyAMA0,115200"
+
+part /boot   --source bootimg-partition --ondisk vda --fstype=vfat --label boot_a   --active --align 4096 --fixed-size 64M
+part         --ondisk vda               --fstype=vfat --label boot_b   --align 4096 --fixed-size 64M
+part /       --source rootfs            --ondisk vda --fstype=ext4 --label rootfs_a --align 4096 --fixed-size 384M
+part         --source rootfs            --ondisk vda --fstype=ext4 --label rootfs_b --align 4096 --fixed-size 384M
+part /factory                           --ondisk vda --fstype=ext4 --label factory  --align 4096 --fixed-size 16M
+part /data                              --ondisk vda --fstype=ext4 --label data     --align 4096 --fixed-size 512M
+

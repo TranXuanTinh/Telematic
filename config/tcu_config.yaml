@@ -1,0 +1,86 @@
+# Master Configuration — Automotive Telematics Control Unit (TCU)
+# Target: Qualcomm SA515M + Companion MCU (Yocto Linux / qemuarm64 / Host Mock)
+
+system:
+  device_id: "tcu-sa515m-001"
+  vin: "VN1TCU515M0000001"
+  hw_compat: "sa515m-s32k144-revB"
+  sw_version: "2.3.0"
+  hal_mode: "mock"                      # "sa515m" | "mock"
+  log_level: "info"                     # "trace" | "debug" | "info" | "warn" | "error"
+  runtime_dir: "/tmp/tcu"
+
+ipc:
+  broker_socket: "/tmp/tcu/ipc.sock"
+  diag_socket: "/tmp/tcu/diag.sock"
+  rpc_timeout_ms: 1500
+
+mcu_link:
+  spi_device: "/dev/spidev0.0"
+  spi_speed_hz: 10000000
+  uart_device: "/dev/ttyHS0"
+  uart_baud: 921600
+  mock_socket: "/tmp/tcu/mcu_spi.sock"
+  ack_timeout_ms: 50
+  max_retries: 3
+  heartbeat_interval_ms: 2000
+
+modem:
+  emergency_number: "112"
+  test_psap_number: "+8419001120"
+  apn: "telematics.oem.net"
+
+gnss:
+  device: "/dev/ttyGNSS0"
+  normal_rate_hz: 1
+  emergency_rate_hz: 10
+  default_lat: 21.028511
+  default_lon: 105.804817
+
+cloud:
+  mqtt_broker: "ssl://mqtt.telematics.oem.local:8883"
+  client_id: "tcu-sa515m-001"
+  ca_cert: "/factory/ca.crt"
+  client_cert: "/factory/device.crt"
+  client_key: "/factory/device.key"
+  command_hmac_secret: "oem-soc-signing-key-2026-v1"
+  spool_dir: "/tmp/tcu/cloud_spool"
+
+ecall:
+  sos_debounce_ms: 2000
+  msd_tx_timeout_ms: 20000
+  max_dial_retries: 10
+  callback_standby_sec: 3600
+  propulsion_mask: 4                    # 0x04 = Electric/Hybrid, 0x01 = Gasoline
+  vehicle_type: 1                       # M1 Passenger Car
+
+ota:
+  staging_dir: "/tmp/tcu/ota_staging"
+  slot_state_file: "/tmp/tcu/rauc_slots.json"
+  public_key_pem: "/tmp/tcu/ota_pub.pem"
+  min_anti_rollback_version: "2.0.0"
+  min_battery_mv: 12200
+  min_bub_soc_pct: 50
+  post_boot_bist_timeout_sec: 90
+
+svt:
+  geofence_radius_m: 100.0
+  tilt_threshold_deg: 3.0
+  kl30_cut_threshold_mv: 6000
+  moving_report_interval_ms: 5000
+  stationary_report_interval_ms: 60000
+  zero_speed_hold_ms: 3000
+
+diagnostics:
+  bist_interval_sec: 30
+  min_bub_soh_pct: 70
+  gnss_ant_min_ma: 2.0
+  gnss_ant_max_ma: 45.0
+  watchdog_device: "/dev/watchdog"
+  watchdog_timeout_sec: 15
+
+storage:
+  db_path: "/tmp/tcu/tcu_persistence.db"
+  max_queue_records: 50000
+  encryption_key_hex: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
